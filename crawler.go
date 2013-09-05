@@ -16,8 +16,8 @@ type Chapter struct {
 	pages int
 	title string
 	starting_path string
-	done chan bool
-	parent * Crawler
+	tar_writer *tar.Writer 
+	parent *Crawler
 }
 
 func (chap *Chapter) download_page(path string, ret_chan *chan io.ReadCloser) {
@@ -29,28 +29,34 @@ func (chap *Chapter) download_page(path string, ret_chan *chan io.ReadCloser) {
 
 func (chap *Chapter) store_chapter(pages_data []io.ReadCloser) {
 	var header *tar.Header
+	buffer := new(bytes.Buffer)
+	var written_size int64
 	for i,data:= range pages_data {
-		header = new(tar.Header)
-		header.Name = strconv.Itoa(i)
-		header.Size = (1<<30)
-		header.ModTime = time.Now()
-		header.Mode = 0644
+		written_size,_ = io.Copy(buffer,data)
+		header = &tar.Header{
+			Name: fmt.Sprintf("./%d",i),
+			Size: written_size,
+			ModTime: time.Now(),
+			Mode: 0644,
+		}
 		chap.tar_writer.WriteHeader(header)
-		io.Copy(chap.tar_writer,data)
+		io.Copy(chap.tar_writer,buffer)
 	}
 }
-
-func (chap *Chapter) download_chapter()  {
+func (chap *Chapter) download_chapter(chapter_path string)  {
+	//chapter path is made of i{rand 1-999}.mangareader.net/name/chapter/name-weirdnum.jpg
+	//this function should generate the random {1-999} and for each page in the chapter,
+	//add 2 to weirdnum and download it
 	fd,_ := os.Create(chap.title)
 	defer fd.Close()
 	gw := gzip.NewWriter(fd)
 	defer gw.Close()
 	chap.tar_writer = tar.NewWriter(gw)
 	defer chap.tar_writer.Close()
-	sweirdnum,eweirdnum := strings.Index(chap.starting_path,"-"),strings.LastIndex(
-								chap.starting_path,".")
-	weirdnum,_ := strconv.Atoi(chap.starting_path[sweirdnum+1:eweirdnum])
-	base_dl_path := chap.starting_path[0:sweirdnum+1]
+	sweirdnum,eweirdnum := strings.Index(chapter_path,"-"),strings.LastIndex(
+									chapter_path,".")
+	weirdnum,_ := strconv.Atoi(chapter_path[sweirdnum+1:eweirdnum])
+	base_dl_path := chapter_path[0:sweirdnum+1]
 	pages_chanel := make([]chan io.ReadCloser,chap.pages)
 	pages_data := make([]io.ReadCloser,chap.pages)
 	for i,_ := range pages_chanel {
@@ -66,7 +72,6 @@ func (chap *Chapter) download_chapter()  {
 		pages_data[i] = <-(pages_chanel[i])
 	}
 	chap.store_chapter(pages_data)
-	chap.done <- true
 }
 
 type Manga struct{
@@ -104,8 +109,13 @@ func (m *Manga) download_chapter_list(){
 	// Calls chapter_list_$, with the links to the first page of each chapter,
 	// calls Chapter.download_chapter(#) on each string of the returned slice
 	// For now this only works with mangareader
+	var tmpstring,link string
 	for _,chap := range m.chapters {
-		go chap.download_chapter()
+		doc,_ = goquery.NewDocument(chap.starting_path)
+		tmpstring = doc.Find("div#selectpage").Text()
+		chap.pages = strconv.Atoi(tmpstring[len(tmpstring)-2:])
+		link,_ = doc.Find("img#img").Attr("src")
+		go chap.download_chapter(link)
 	}
 	for _,chap := range m.chapters {
 		<- chap.done
