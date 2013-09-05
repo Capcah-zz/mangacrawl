@@ -5,12 +5,68 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"time"
 	"strconv"
+	"math/rand"
+	"net/http"
+	"io"
+	"archive/tar"
 )
 
 type Chapter struct {
 	number int
 	pages int
 	title string
+	starting_path string
+	done chan bool
+	parent * Crawler
+}
+
+func (chap *Chapter) download_page(path string, ret_chan *chan io.ReadCloser) {
+	<-chap.parent.semaphores
+	content,_ := http.Get(path)
+	*ret_chan <- content.Body
+	chap.parent.semaphores<-true
+}
+
+func (chap *Chapter) store_chapter(pages_data []io.ReadCloser) {
+	var header *tar.Header
+	for i,data:= range pages_data {
+		header = new(tar.Header)
+		header.Name = strconv.Itoa(i)
+		header.Size = (1<<30)
+		header.ModTime = time.Now()
+		header.Mode = 0644
+		chap.tar_writer.WriteHeader(header)
+		io.Copy(chap.tar_writer,data)
+	}
+}
+
+func (chap *Chapter) download_chapter()  {
+	fd,_ := os.Create(chap.title)
+	defer fd.Close()
+	gw := gzip.NewWriter(fd)
+	defer gw.Close()
+	chap.tar_writer = tar.NewWriter(gw)
+	defer chap.tar_writer.Close()
+	sweirdnum,eweirdnum := strings.Index(chap.starting_path,"-"),strings.LastIndex(
+								chap.starting_path,".")
+	weirdnum,_ := strconv.Atoi(chap.starting_path[sweirdnum+1:eweirdnum])
+	base_dl_path := chap.starting_path[0:sweirdnum+1]
+	pages_chanel := make([]chan io.ReadCloser,chap.pages)
+	pages_data := make([]io.ReadCloser,chap.pages)
+	for i,_ := range pages_chanel {
+		pages_chanel[i] = make(chan io.ReadCloser)
+	}
+	for i,_ := range pages_data{
+		fmt.Println(i)
+		go chap.download_page(fmt.Sprintf("%s%d.jpg",base_dl_path ,weirdnum+2*i),
+									&pages_chanel[i])
+	} 
+	for i,_ := range pages_data{
+		fmt.Println(">",i)
+		pages_data[i] = <-(pages_chanel[i])
+	}
+	chap.store_chapter(pages_data)
+	chap.done <- true
 }
 
 type Manga struct{
@@ -23,19 +79,37 @@ type Manga struct{
 	ongoing bool
 	normal bool //reading direction, normal <-
 	tags []string
-	last_chapter int
 	abstract string
+	last_chapter int
+	chapters []Chapter
+	parent * Crawler
 }
 
-func (m *Manga) chapter_list_mangareader(base_path string) []string {
-	chap_list := []string{};
-	var link string
-	doc,_ := goquery.NewDocument(fmt.Sprintf("%s%s",base_path,m.rel_path))
+func (m *Manga) chapter_list_mangareader() []string {
+	// This function only defines number, 
+	m.chapters := make([]Chapter)
+	tchap *Chapter
+	doc,_ := goquery.NewDocument(fmt.Sprintf("%s%s",m.parent.base_path,m.rel_path))
 	doc.Find("table#listing a").Each(func(i int, s *goquery.Selection){
 		link,_ = s.Attr("href")
-		chap_list= append(chap_list,link)
+		tchap = make(Chapter)
+		tchap.number = i
+		tchap.starting_path = link
+		tchap.parent = m.parent
+		m.chapters[i] = tchap
 	})
-	return chap_list
+}
+
+func (m *Manga) download_chapter_list(){
+	// Calls chapter_list_$, with the links to the first page of each chapter,
+	// calls Chapter.download_chapter(#) on each string of the returned slice
+	// For now this only works with mangareader
+	for _,chap := range m.chapters {
+		go chap.download_chapter()
+	}
+	for _,chap := range m.chapters {
+		<- chap.done
+	}
 }
 
 type Crawler struct {
@@ -92,6 +166,7 @@ func (c *Crawler) create_manga_entry(link string) Manga{
 			m.normal = (s.Text() == "Right to Left")
 		}
 	})
+	m.parent = c
 	doc.Find("span.genretags").Each(func(i int,s *goquery.Selection){
 		tags= append(m.tags, s.Text())
 	})
