@@ -5,10 +5,12 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"time"
 	"strconv"
-	"math/rand"
-	"net/http"
 	"io"
 	"archive/tar"
+	"os"
+	"strings"
+	"net/http"
+	"bytes"
 )
 
 type Chapter struct {
@@ -16,6 +18,7 @@ type Chapter struct {
 	pages int
 	title string
 	starting_path string
+	done chan bool
 	tar_writer *tar.Writer 
 	parent *Crawler
 }
@@ -49,9 +52,7 @@ func (chap *Chapter) download_chapter(chapter_path string)  {
 	//add 2 to weirdnum and download it
 	fd,_ := os.Create(chap.title)
 	defer fd.Close()
-	gw := gzip.NewWriter(fd)
-	defer gw.Close()
-	chap.tar_writer = tar.NewWriter(gw)
+	chap.tar_writer = tar.NewWriter(fd)
 	defer chap.tar_writer.Close()
 	sweirdnum,eweirdnum := strings.Index(chapter_path,"-"),strings.LastIndex(
 									chapter_path,".")
@@ -86,22 +87,24 @@ type Manga struct{
 	tags []string
 	abstract string
 	last_chapter int
-	chapters []Chapter
+	chapters []*Chapter
 	parent * Crawler
 }
 
-func (m *Manga) chapter_list_mangareader() []string {
-	// This function only defines number, 
-	m.chapters := make([]Chapter)
-	tchap *Chapter
+func (m *Manga) chapter_list_mangareader() {
+	// Chapter title parsing should be done here.
+	m.chapters = *new([]*Chapter)
+	var tchap *Chapter
+	var link string
 	doc,_ := goquery.NewDocument(fmt.Sprintf("%s%s",m.parent.base_path,m.rel_path))
 	doc.Find("table#listing a").Each(func(i int, s *goquery.Selection){
 		link,_ = s.Attr("href")
-		tchap = make(Chapter)
-		tchap.number = i
-		tchap.starting_path = link
-		tchap.parent = m.parent
-		m.chapters[i] = tchap
+		tchap = &Chapter{
+			number: i,
+			starting_path: link,
+			parent: m.parent,
+		}
+		m.chapters = append(m.chapters,tchap)
 	})
 }
 
@@ -110,10 +113,11 @@ func (m *Manga) download_chapter_list(){
 	// calls Chapter.download_chapter(#) on each string of the returned slice
 	// For now this only works with mangareader
 	var tmpstring,link string
+	var doc *goquery.Document
 	for _,chap := range m.chapters {
 		doc,_ = goquery.NewDocument(chap.starting_path)
 		tmpstring = doc.Find("div#selectpage").Text()
-		chap.pages = strconv.Atoi(tmpstring[len(tmpstring)-2:])
+		chap.pages,_ = strconv.Atoi(tmpstring[len(tmpstring)-2:])
 		link,_ = doc.Find("img#img").Attr("src")
 		go chap.download_chapter(link)
 	}

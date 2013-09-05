@@ -1,4 +1,4 @@
-package main
+package playground
 
 import(
 	"fmt"
@@ -34,6 +34,7 @@ func (chap *Chapter) store_chapter(pages_data []io.ReadCloser) {
 		header = &tar.Header{
 			Name: fmt.Sprintf("./%d",i),
 			Size: written_size,
+			ModTime: time.Now(),
 			Mode: 0644,
 		}
 		chap.tar_writer.WriteHeader(header)
